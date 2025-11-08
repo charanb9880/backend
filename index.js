@@ -1,4 +1,4 @@
-// ✅ FORCE IPv4 ON RENDER
+// ✅ FORCE IPv4 ON RENDE
 import dns from "dns";
 dns.setDefaultResultOrder("ipv4first");
 
