@@ -4,8 +4,8 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-// ✅ Force IPv4 on Render
-process.env.PGHOSTADDR = '0.0.0.0';
+import dns from "dns";
+dns.setDefaultResultOrder('ipv4first'); // ✅ Force IPv4 on Render & Supabase
 
 if (process.env.ALLOW_INSECURE_TLS === '1')
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -22,7 +22,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 /* ======================
-   CORS
+   CORS FIX ✅
 ====================== */
 app.use(cors({
   origin: '*',
@@ -32,13 +32,13 @@ app.use(cors({
 app.use(express.json());
 
 /* ======================
-   ✅ DATABASE (Render IPv4 Safe)
+   DATABASE (IPv4 enforced)
 ====================== */
 const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  host: process.env.PGHOST,
+  host: process.env.PGHOST,    // ✅ works now
   port: process.env.PGPORT || 5432,
   ssl: { rejectUnauthorized: false }
 });
@@ -111,7 +111,7 @@ app.get('/api/system', async (req,res)=>{
 });
 
 /* ======================
-   LIVE MARKET
+   LIVE PRICES
 ====================== */
 app.get('/api/prices', async (req,res)=>{
   const r = await pool.query(`SELECT symbol,current_price FROM live_prices ORDER BY symbol`);
@@ -126,7 +126,6 @@ app.get('/api/portfolio', verifyToken, async (req,res)=>{
     return res.status(403).json({ error:'Admins cannot trade' });
 
   const uid = req.user.id;
-
   const cash = await pool.query(
     `SELECT virtual_cash,status FROM users WHERE id=$1`,
     [uid]
@@ -174,11 +173,34 @@ app.post('/api/trade/buy', verifyToken, async (req,res)=>{
 
   await pool.query(`UPDATE users SET virtual_cash=virtual_cash-$1 WHERE id=$2`, [cost, uid]);
 
-  await pool.query(
-    `INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
-     VALUES($1,$2,'BUY',$3,$4,NOW())`,
-    [uid, symbol, qty, price]
+  const existing = await pool.query(
+    `SELECT quantity,average_price FROM portfolio WHERE user_id=$1 AND symbol=$2`,
+    [uid, symbol]
   );
+
+  if (!existing.rowCount) {
+    await pool.query(
+      `INSERT INTO portfolio(user_id,symbol,quantity,average_price)
+       VALUES($1,$2,$3,$4)`,
+      [uid, symbol, qty, price]
+    );
+  } else {
+    const qOld = existing.rows[0].quantity;
+    const aOld = existing.rows[0].average_price;
+    const qNew = qOld + qty;
+    const avg = ((qOld*aOld) + (qty*price)) / qNew;
+
+    await pool.query(
+      `UPDATE portfolio SET quantity=$1,average_price=$2
+       WHERE user_id=$3 AND symbol=$4`,
+      [qNew, avg, uid, symbol]
+    );
+  }
+
+  await pool.query(`
+    INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
+    VALUES($1,$2,'BUY',$3,$4,NOW())
+  `, [uid, symbol, qty, price]);
 
   res.json({ok:true});
 });
@@ -186,8 +208,91 @@ app.post('/api/trade/buy', verifyToken, async (req,res)=>{
 /* ======================
    SELL
 ====================== */
-// ... (same)
+app.post('/api/trade/sell', verifyToken, async (req,res)=>{
+  if (req.user.role === 'ADMIN')
+    return res.status(403).json({ error:'Admin cannot trade' });
 
+  const {symbol, quantity} = req.body;
+  const uid = req.user.id;
+  const qty = Number(quantity);
+
+  if (qty <= 0) return res.status(400).json({error:'Invalid quantity'});
+
+  const pos = await pool.query(
+    `SELECT quantity FROM portfolio WHERE user_id=$1 AND symbol=$2`,
+    [uid, symbol]
+  );
+
+  if (!pos.rowCount) return res.status(400).json({error:'No holdings'});
+  const owned = pos.rows[0].quantity;
+  if (qty > owned) return res.status(400).json({error:'Not enough shares'});
+
+  const pR = await pool.query(`SELECT current_price FROM live_prices WHERE symbol=$1`, [symbol]);
+  const price = Number(pR.rows[0].current_price);
+  const revenue = price * qty;
+
+  if (qty === owned) {
+    await pool.query(`DELETE FROM portfolio WHERE user_id=$1 AND symbol=$2`, [uid, symbol]);
+  } else {
+    await pool.query(
+      `UPDATE portfolio SET quantity=$1 WHERE user_id=$2 AND symbol=$3`,
+      [owned - qty, uid, symbol]
+    );
+  }
+
+  await pool.query(
+    `UPDATE users SET virtual_cash=virtual_cash+$1 WHERE id=$2`,
+    [revenue, uid]
+  );
+
+  await pool.query(`
+    INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
+    VALUES($1,$2,'SELL',$3,$4,NOW())
+  `, [uid, symbol, qty, price]);
+
+  res.json({ok:true});
+});
+
+/* ======================
+   ADMIN ROUTES
+====================== */
+app.get('/api/admin/leaderboard', verifyToken, requireAdmin, async (_, res) => {
+  const r = await pool.query(`
+    SELECT 
+      u.id,
+      u.name,
+      u.email,
+      (
+        u.virtual_cash + COALESCE(SUM(p.quantity * lp.current_price), 0)
+      )::numeric AS total_value,
+      (
+        (COALESCE(SUM(p.quantity * lp.current_price), 0) + u.virtual_cash) - 50000
+      )::numeric AS profit
+    FROM users u
+    LEFT JOIN portfolio p ON p.user_id = u.id
+    LEFT JOIN live_prices lp ON lp.symbol = p.symbol
+    WHERE u.role <> 'ADMIN'
+    GROUP BY u.id
+    ORDER BY total_value DESC
+  `);
+  res.json(r.rows);
+});
+
+app.get('/api/admin/recent-trades', verifyToken, requireAdmin, async (_, res) => {
+  const r = await pool.query(`
+    SELECT 
+      th.id, th.symbol, th.trade_type, th.quantity, th.price, th.timestamp AS time, u.name
+    FROM trade_history th
+    JOIN users u ON u.id = th.user_id
+    ORDER BY th.timestamp DESC
+    LIMIT 15
+  `);
+  res.json(r.rows);
+});
+
+/* ======================
+   START SERVER
+====================== */
 app.listen(PORT, () => {
   console.log(`✅ TradeRace backend running on :${PORT}`);
   runPriceFetcher().catch(e=>console.error("❌ First tick:", e));
