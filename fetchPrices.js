@@ -1,101 +1,195 @@
-// ✅ fetchPrices.js
-import * as dotenv from "dotenv";
+/* ======================
+   ENV SETUP
+====================== */
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import pkg from "pg";
-const { Pool } = pkg;
+// ✅ Force IPv4 on Render
+process.env.PGHOSTADDR = '0.0.0.0';
 
-// ✅ Render PostgreSQL IPv4-safe connection
+if (process.env.ALLOW_INSECURE_TLS === '1')
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+import express from 'express';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import pkg from 'pg';
+import runPriceFetcher from './fetchPrices.js';
+
+const { Pool } = pkg;
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+/* ======================
+   CORS
+====================== */
+app.use(cors({
+  origin: '*',
+  methods: ['GET','POST','PUT','DELETE'],
+  allowedHeaders: ['Content-Type','Authorization']
+}));
+app.use(express.json());
+
+/* ======================
+   ✅ DATABASE (Render IPv4 Safe)
+====================== */
 const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  host: process.env.PGHOST, // ✅ Force IPv4
-  port: 5432,
+  host: process.env.PGHOST,
+  port: process.env.PGPORT || 5432,
   ssl: { rejectUnauthorized: false }
 });
 
-// ✅ Stocks with volatility + sectors
-const STOCKS = [
-  { sym: "AAPL", sector: "TECH", vol: 0.004 },
-  { sym: "MSFT", sector: "TECH", vol: 0.0035 },
-  { sym: "GOOGL", sector: "TECH", vol: 0.0045 },
-  { sym: "NVDA", sector: "TECH", vol: 0.007 },
-  { sym: "TSLA", sector: "AUTO", vol: 0.009 },
-  { sym: "AMZN", sector: "RETAIL", vol: 0.0045 },
-  { sym: "META", sector: "TECH", vol: 0.0038 },
-  { sym: "NFLX", sector: "MEDIA", vol: 0.006 },
-  { sym: "INTC", sector: "CHIP", vol: 0.002 },
-  { sym: "AMD", sector: "CHIP", vol: 0.0055 }
-];
+/* ======================
+   AUTH HELPERS
+====================== */
+function verifyToken(req, res, next) {
+  const h = req.headers['authorization'];
+  const t = h && h.split(' ')[1];
+  if (!t) return res.status(401).json({ error: 'No token' });
 
-function marketSentiment() {
-  const r = Math.random();
-  if (r < 0.02) return 0.02;  // strong pump
-  if (r < 0.04) return -0.02; // strong crash
-  if (r < 0.08) return 0.01;
-  if (r < 0.12) return -0.01;
-  return 0;
+  jwt.verify(t, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token' });
+    req.user = user;
+    next();
+  });
 }
 
-function sectorSentiment(sector) {
-  const r = Math.random();
-  if (r < 0.03 && sector === "TECH") return 0.015;
-  if (r < 0.03 && sector === "AUTO") return -0.015;
-  if (r < 0.03 && sector === "CHIP") return 0.02;
-  return 0;
+function requireAdmin(req, res, next) {
+  if (req.user.role !== 'ADMIN')
+    return res.status(403).json({ error: 'Admin only' });
+  next();
 }
 
-function nextPrice(prev, vol, global, sector) {
-  let move = prev * vol * (Math.random() - 0.5);
-  move += prev * global;
-  move += prev * sector;
+/* ======================
+   AUTH ROUTES
+====================== */
+app.post('/auth/register', async (req, res) => {
+  const { name, email, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
 
-  if (Math.random() < 0.02) move *= (2 + Math.random() * 3);
-
-  const price = prev + move;
-  return Math.max(price, 1);
-}
-
-export default async function runPriceFetcher() {
-  console.log("⚙️ Price tick...");
-
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-
-    const global = marketSentiment();
-    if (global > 0) console.log(`🔥 MARKET PUMP: +${(global*100).toFixed(2)}%`);
-    else if (global < 0) console.log(`🚨 MARKET DROP: ${(global*100).toFixed(2)}%`);
-    else console.log(`✅ Normal market`);
-
-    for (const s of STOCKS) {
-      const sectorBias = sectorSentiment(s.sector);
-
-      const prev = await client.query(
-        `SELECT current_price FROM live_prices WHERE symbol=$1`,
-        [s.sym]
-      );
-
-      const oldPrice = Number(prev.rows?.[0]?.current_price || 100);
-      const newPrice = nextPrice(oldPrice, s.vol, global, sectorBias);
-
-      await client.query(
-        `INSERT INTO live_prices(symbol,current_price,last_updated)
-         VALUES($1,$2,NOW())
-         ON CONFLICT(symbol)
-         DO UPDATE SET current_price=$2,last_updated=NOW()`,
-        [s.sym, newPrice]
-      );
-
-      console.log(`📈 ${s.sym} → ${newPrice.toFixed(2)}`);
-    }
-
-    await client.query("COMMIT");
-  } catch (e) {
-    console.error("❌ Price Engine Error:", e.message);
-    await client.query("ROLLBACK");
-  } finally {
-    client.release();
+    const r = await pool.query(
+      `INSERT INTO users (name, email, password_hash, virtual_cash, status, role)
+       VALUES ($1, $2, $3, 50000, 'PENDING', 'USER')
+       RETURNING id, name, email, status, role, virtual_cash`,
+      [name, email, hash]
+    );
+    res.json(r.rows[0]);
+  } catch {
+    res.status(500).json({ error: 'Email already exists' });
   }
-}
+});
+
+app.post('/auth/login', async (req,res)=>{
+  const {email,password} = req.body;
+  const r = await pool.query(`SELECT * FROM users WHERE email=$1`, [email]);
+  if (!r.rowCount) return res.status(401).json({ error:'User not found' });
+
+  const u = r.rows[0];
+  if (!await bcrypt.compare(password, u.password_hash))
+    return res.status(401).json({ error:'Wrong password' });
+
+  const token = jwt.sign(
+    { id: u.id, role: u.role },
+    process.env.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  res.json({ token, role:u.role, status:u.status, name:u.name });
+});
+
+/* ======================
+   SYSTEM
+====================== */
+app.get('/api/system', async (req,res)=>{
+  const r = await pool.query(`SELECT trading_enabled FROM system_state WHERE id=1`);
+  res.json(r.rows[0] || { trading_enabled:false });
+});
+
+/* ======================
+   LIVE MARKET
+====================== */
+app.get('/api/prices', async (req,res)=>{
+  const r = await pool.query(`SELECT symbol,current_price FROM live_prices ORDER BY symbol`);
+  res.json(r.rows);
+});
+
+/* ======================
+   PORTFOLIO
+====================== */
+app.get('/api/portfolio', verifyToken, async (req,res)=>{
+  if (req.user.role === 'ADMIN')
+    return res.status(403).json({ error:'Admins cannot trade' });
+
+  const uid = req.user.id;
+
+  const cash = await pool.query(
+    `SELECT virtual_cash,status FROM users WHERE id=$1`,
+    [uid]
+  );
+
+  const positions = await pool.query(
+    `SELECT p.symbol, p.quantity, p.average_price, lp.current_price
+     FROM portfolio p
+     LEFT JOIN live_prices lp ON lp.symbol = p.symbol
+     WHERE p.user_id=$1
+     ORDER BY p.symbol`,
+    [uid]
+  );
+
+  res.json({
+    virtual_cash: cash.rows[0]?.virtual_cash ?? 0,
+    status: cash.rows[0]?.status ?? 'PENDING',
+    positions: positions.rows
+  });
+});
+
+/* ======================
+   BUY
+====================== */
+app.post('/api/trade/buy', verifyToken, async (req,res)=>{
+  if (req.user.role === 'ADMIN')
+    return res.status(403).json({ error:'Admin cannot trade' });
+
+  const {symbol, quantity} = req.body;
+  const uid = req.user.id;
+  const qty = Number(quantity);
+
+  if (!symbol || qty <= 0) return res.status(400).json({error:'Invalid quantity'});
+
+  const pR = await pool.query(`SELECT current_price FROM live_prices WHERE symbol=$1`, [symbol]);
+  if (!pR.rowCount) return res.status(400).json({error:'Unknown symbol'});
+
+  const price = Number(pR.rows[0].current_price);
+  const cost = price * qty;
+
+  const uR = await pool.query(`SELECT virtual_cash FROM users WHERE id=$1`, [uid]);
+  const cash = Number(uR.rows[0].virtual_cash);
+
+  if (cash < cost) return res.status(400).json({error:'Insufficient cash'});
+
+  await pool.query(`UPDATE users SET virtual_cash=virtual_cash-$1 WHERE id=$2`, [cost, uid]);
+
+  await pool.query(
+    `INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
+     VALUES($1,$2,'BUY',$3,$4,NOW())`,
+    [uid, symbol, qty, price]
+  );
+
+  res.json({ok:true});
+});
+
+/* ======================
+   SELL
+====================== */
+// ... (same)
+
+app.listen(PORT, () => {
+  console.log(`✅ TradeRace backend running on :${PORT}`);
+  runPriceFetcher().catch(e=>console.error("❌ First tick:", e));
+  setInterval(()=>runPriceFetcher().catch(e=>console.error("❌ Tick:", e)), 10000);
+});
