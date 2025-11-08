@@ -19,9 +19,30 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 /* ======================
+   ✅ FIXED CORS FOR RENDER + VERCEL
+====================== */
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://frontend-five-delta-38.vercel.app"
+    ],
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+  })
+);
+
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin);
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  next();
+});
+
+/* ======================
    MIDDLEWARE
 ====================== */
-app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json());
 
 /* ======================
@@ -89,7 +110,7 @@ app.post('/auth/login', async (req,res)=>{
     { expiresIn: '7d' }
   );
 
-  res.json({ token, role: u.role, status: u.status, name: u.name });
+  res.json({ token, role:u.role, status:u.status, name:u.name });
 });
 
 /* ======================
@@ -189,10 +210,11 @@ app.post('/api/trade/buy', verifyToken, async (req,res)=>{
   }
 
   // ✅ LOG TRADE
-  await pool.query(`
-    INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
-    VALUES($1,$2,'BUY',$3,$4,NOW())
-  `, [uid, symbol, qty, price]);
+  await pool.query(
+    `INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
+     VALUES($1,$2,'BUY',$3,$4,NOW())`,
+    [uid, symbol, qty, price]
+  );
 
   res.json({ok:true});
 });
@@ -238,10 +260,11 @@ app.post('/api/trade/sell', verifyToken, async (req,res)=>{
   );
 
   // ✅ LOG TRADE
-  await pool.query(`
-    INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
-    VALUES($1,$2,'SELL',$3,$4,NOW())
-  `, [uid, symbol, qty, price]);
+  await pool.query(
+    `INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
+     VALUES($1,$2,'SELL',$3,$4,NOW())`,
+    [uid, symbol, qty, price]
+  );
 
   res.json({ok:true});
 });
@@ -328,7 +351,7 @@ app.get('/api/admin/leaderboard', verifyToken, requireAdmin, async (_, res) => {
   res.json(r.rows);
 });
 
-/* ✅ FIXED — now returns BOTH name and email */
+/* ✅ FIXED — recent trades sends name + email */
 app.get('/api/admin/recent-trades', verifyToken, requireAdmin, async (_, res) => {
   try {
     const r = await pool.query(`
@@ -346,7 +369,6 @@ app.get('/api/admin/recent-trades', verifyToken, requireAdmin, async (_, res) =>
       ORDER BY th.timestamp DESC
       LIMIT 15
     `);
-
     res.json(r.rows);
   } catch (err) {
     console.error("❌ Recent Trades Error:", err.message);
