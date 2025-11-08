@@ -1,23 +1,21 @@
+import dns from "dns";
+dns.setDefaultResultOrder("ipv4first");
+
 import * as dotenv from "dotenv";
 dotenv.config();
-
-import dns from "dns";
-dns.setDefaultResultOrder("ipv4first"); // ✅ Force IPv4
 
 import pkg from "pg";
 const { Pool } = pkg;
 
-// ✅ Render & Supabase-friendly IPv4 PostgreSQL connection:
 const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
   host: process.env.PGHOST,
-  port: process.env.PGPORT || 5432,
+  port: 5432,
   ssl: { rejectUnauthorized: false }
 });
 
-// ✅ Stocks with volatility + sectors
 const STOCKS = [
   { sym: "AAPL", sector: "TECH", vol: 0.004 },
   { sym: "MSFT", sector: "TECH", vol: 0.0035 },
@@ -53,7 +51,8 @@ function nextPrice(prev, vol, global, sector) {
   move += prev * global;
   move += prev * sector;
   if (Math.random() < 0.02) move *= (2 + Math.random() * 3);
-  return Math.max(prev + move, 1);
+  const p = prev + move;
+  return Math.max(p, 1);
 }
 
 export default async function runPriceFetcher() {
@@ -64,35 +63,26 @@ export default async function runPriceFetcher() {
     await client.query("BEGIN");
 
     const global = marketSentiment();
-    if (global > 0) console.log(`🔥 MARKET PUMP: +${(global*100).toFixed(2)}%`);
-    else if (global < 0) console.log(`🚨 MARKET DROP: ${(global*100).toFixed(2)}%`);
-    else console.log(`✅ Normal market`);
+    console.log(global === 0 ? "✅ Normal market" : global > 0 ? "🔥 Mini rally" : "🚨 Mini drop");
 
     for (const s of STOCKS) {
-      const sectorBias = sectorSentiment(s.sector);
+      const sector = sectorSentiment(s.sector);
+      const prev = await client.query(`SELECT current_price FROM live_prices WHERE symbol=$1`, [s.sym]);
+      const oldP = Number(prev.rows?.[0]?.current_price || 100);
+      const newP = nextPrice(oldP, s.vol, global, sector);
 
-      const prev = await client.query(
-        `SELECT current_price FROM live_prices WHERE symbol=$1`,
-        [s.sym]
-      );
+      await client.query(`
+        INSERT INTO live_prices(symbol,current_price,last_updated)
+        VALUES($1,$2,NOW())
+        ON CONFLICT(symbol) DO UPDATE SET current_price=$2,last_updated=NOW()
+      `, [s.sym, newP]);
 
-      const oldPrice = Number(prev.rows?.[0]?.current_price || 100);
-      const newPrice = nextPrice(oldPrice, s.vol, global, sectorBias);
-
-      await client.query(
-        `INSERT INTO live_prices(symbol,current_price,last_updated)
-         VALUES($1,$2,NOW())
-         ON CONFLICT(symbol)
-         DO UPDATE SET current_price=$2,last_updated=NOW()`,
-        [s.sym, newPrice]
-      );
-
-      console.log(`📈 ${s.sym} → ${newPrice.toFixed(2)}`);
+      console.log(`📈 ${s.sym} → ${newP.toFixed(2)}`);
     }
 
     await client.query("COMMIT");
   } catch (e) {
-    console.error("❌ Price Engine Error:", e.message);
+    console.error("❌ Tick:", e.message);
     await client.query("ROLLBACK");
   } finally {
     client.release();
