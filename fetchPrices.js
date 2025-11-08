@@ -1,17 +1,19 @@
-// ✅ fetchPrices.js
 import * as dotenv from "dotenv";
 dotenv.config();
+
+import dns from "dns";
+dns.setDefaultResultOrder("ipv4first"); // ✅ Force IPv4
 
 import pkg from "pg";
 const { Pool } = pkg;
 
-// ✅ Render PostgreSQL IPv4-safe connection
+// ✅ Render & Supabase-friendly IPv4 PostgreSQL connection:
 const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
-  host: process.env.PGHOST, // ✅ Force IPv4
-  port: 5432,
+  host: process.env.PGHOST,
+  port: process.env.PGPORT || 5432,
   ssl: { rejectUnauthorized: false }
 });
 
@@ -31,8 +33,8 @@ const STOCKS = [
 
 function marketSentiment() {
   const r = Math.random();
-  if (r < 0.02) return 0.02;  // strong pump
-  if (r < 0.04) return -0.02; // strong crash
+  if (r < 0.02) return 0.02;
+  if (r < 0.04) return -0.02;
   if (r < 0.08) return 0.01;
   if (r < 0.12) return -0.01;
   return 0;
@@ -50,11 +52,8 @@ function nextPrice(prev, vol, global, sector) {
   let move = prev * vol * (Math.random() - 0.5);
   move += prev * global;
   move += prev * sector;
-
   if (Math.random() < 0.02) move *= (2 + Math.random() * 3);
-
-  const price = prev + move;
-  return Math.max(price, 1);
+  return Math.max(prev + move, 1);
 }
 
 export default async function runPriceFetcher() {
