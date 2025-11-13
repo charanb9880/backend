@@ -1,4 +1,3 @@
-#
 import dns from "dns";
 dns.setDefaultResultOrder("ipv4first");
 
@@ -8,6 +7,7 @@ dotenv.config();
 import pkg from "pg";
 const { Pool } = pkg;
 
+// Use Render/Supabase Postgres with SSL enabled
 const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
@@ -22,6 +22,7 @@ const STOCKS = [
   { sym: "MSFT", sector: "TECH", vol: 0.0035 },
   { sym: "GOOGL", sector: "TECH", vol: 0.0045 },
   { sym: "NVDA", sector: "TECH", vol: 0.007 },
+
   { sym: "TSLA", sector: "AUTO", vol: 0.009 },
   { sym: "AMZN", sector: "RETAIL", vol: 0.0045 },
   { sym: "META", sector: "TECH", vol: 0.0038 },
@@ -51,9 +52,10 @@ function nextPrice(prev, vol, global, sector) {
   let move = prev * vol * (Math.random() - 0.5);
   move += prev * global;
   move += prev * sector;
+
   if (Math.random() < 0.02) move *= (2 + Math.random() * 3);
-  const p = prev + move;
-  return Math.max(p, 1);
+
+  return Math.max(prev + move, 1);
 }
 
 export default async function runPriceFetcher() {
@@ -64,19 +66,33 @@ export default async function runPriceFetcher() {
     await client.query("BEGIN");
 
     const global = marketSentiment();
-    console.log(global === 0 ? "✅ Normal market" : global > 0 ? "🔥 Mini rally" : "🚨 Mini drop");
+    console.log(
+      global === 0
+        ? "✅ Normal market"
+        : global > 0
+        ? "🔥 Mini rally"
+        : "🚨 Mini drop"
+    );
 
     for (const s of STOCKS) {
       const sector = sectorSentiment(s.sector);
-      const prev = await client.query(`SELECT current_price FROM live_prices WHERE symbol=$1`, [s.sym]);
-      const oldP = Number(prev.rows?.[0]?.current_price || 100);
+      const res = await client.query(
+        `SELECT current_price FROM live_prices WHERE symbol=$1`,
+        [s.sym]
+      );
+
+      const oldP = Number(res.rows?.[0]?.current_price || 100);
       const newP = nextPrice(oldP, s.vol, global, sector);
 
-      await client.query(`
-        INSERT INTO live_prices(symbol,current_price,last_updated)
-        VALUES($1,$2,NOW())
-        ON CONFLICT(symbol) DO UPDATE SET current_price=$2,last_updated=NOW()
-      `, [s.sym, newP]);
+      await client.query(
+        `
+        INSERT INTO live_prices(symbol, current_price, last_updated)
+        VALUES($1, $2, NOW())
+        ON CONFLICT(symbol)
+        DO UPDATE SET current_price=$2, last_updated=NOW()
+        `,
+        [s.sym, newP]
+      );
 
       console.log(`📈 ${s.sym} → ${newP.toFixed(2)}`);
     }
