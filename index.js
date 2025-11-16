@@ -21,7 +21,13 @@ const PORT = process.env.PORT || 10000;
 /* ======================
    MIDDLEWARE
 ====================== */
-app.use(cors({ origin: '*', credentials: true }));
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || "*",
+  credentials: true,
+  methods: ["GET","POST","PUT","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"]
+}));
+
 app.use(express.json());
 
 /* ======================
@@ -31,10 +37,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
-
-
-
-
 
 /* ======================
    AUTH HELPERS
@@ -192,7 +194,7 @@ app.post('/api/trade/buy', verifyToken, async (req,res)=>{
     );
   }
 
-  // ✅ LOG TRADE
+  // log trade
   await pool.query(`
     INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
     VALUES($1,$2,'BUY',$3,$4,NOW())
@@ -220,6 +222,7 @@ app.post('/api/trade/sell', verifyToken, async (req,res)=>{
   );
 
   if (pos.rowCount === 0) return res.status(400).json({error:'No holdings'});
+  
   const owned = pos.rows[0].quantity;
   if (qty > owned) return res.status(400).json({error:'Not enough shares'});
 
@@ -241,7 +244,6 @@ app.post('/api/trade/sell', verifyToken, async (req,res)=>{
     [revenue, uid]
   );
 
-  // ✅ LOG TRADE
   await pool.query(`
     INSERT INTO trade_history(user_id, symbol, trade_type, quantity, price, timestamp)
     VALUES($1,$2,'SELL',$3,$4,NOW())
@@ -292,6 +294,69 @@ app.post('/api/admin/block', verifyToken, requireAdmin, async (req,res)=>{
   res.json({ ok:true });
 });
 
+/* ======================
+   NEW: ASSIGN CASH TO A SINGLE USER
+   POST /api/admin/assign-cash/:userId
+   Body: { amount: number }
+====================== */
+app.post('/api/admin/assign-cash/:userId', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount } = req.body;
+
+    if (typeof amount === 'undefined') {
+      return res.status(400).json({ error: 'Missing amount' });
+    }
+
+    const am = Number(amount);
+    if (!Number.isFinite(am) || am < 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    const upd = await pool.query(
+      `UPDATE users SET virtual_cash = $1 WHERE id = $2 RETURNING id, name, email, virtual_cash, status, role`,
+      [am, userId]
+    );
+
+    if (upd.rowCount === 0) return res.status(404).json({ error: 'User not found' });
+
+    res.json({ ok: true, user: upd.rows[0] });
+  } catch (err) {
+    console.error('❌ assign-cash error:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+/* ======================
+   NEW: BULK APPROVE + ASSIGN FUNDS
+   POST /api/admin/approve-all
+   Body: { amount: number }
+====================== */
+app.post('/api/admin/approve-all', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { amount } = req.body;
+
+    if (typeof amount === 'undefined') {
+      return res.status(400).json({ error: 'Missing amount' });
+    }
+
+    const am = Number(amount);
+    if (!Number.isFinite(am) || am < 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    const result = await pool.query(
+      `UPDATE users SET status='APPROVED', virtual_cash=$1 WHERE status='PENDING' RETURNING id`,
+      [am]
+    );
+
+    res.json({ ok: true, approved_count: result.rowCount });
+  } catch (err) {
+    console.error('❌ approve-all error:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 app.post('/api/admin/remove', verifyToken, requireAdmin, async (req,res)=>{
   const { user_id } = req.body;
   await pool.query(`DELETE FROM trade_history WHERE user_id=$1`, [user_id]);
@@ -300,16 +365,39 @@ app.post('/api/admin/remove', verifyToken, requireAdmin, async (req,res)=>{
   res.json({ ok:true });
 });
 
-app.post('/api/admin/trading/start', verifyToken, requireAdmin, async (req,res)=>{
-  await pool.query(`UPDATE system_state SET trading_enabled=TRUE`);
-  res.json({ ok:true });
+/* ======================
+   ADMIN — SET VIRTUAL CASH
+====================== */
+app.post('/api/admin/set-virtual-cash', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { user_id, virtual_cash } = req.body;
+
+    if (typeof user_id === 'undefined' || typeof virtual_cash === 'undefined') {
+      return res.status(400).json({ error: 'Missing user_id or virtual_cash' });
+    }
+
+    const vc = Number(virtual_cash);
+    if (!Number.isFinite(vc) || vc < 0) {
+      return res.status(400).json({ error: 'virtual_cash must be non-negative' });
+    }
+
+    const upd = await pool.query(
+      `UPDATE users SET virtual_cash = $1 WHERE id = $2 RETURNING id, name, email, virtual_cash, status, role`,
+      [vc, user_id]
+    );
+
+    if (upd.rowCount === 0) return res.status(404).json({ error: 'User not found' });
+
+    res.json({ ok: true, user: upd.rows[0] });
+  } catch (err) {
+    console.error('❌ set-virtual-cash error:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
 });
 
-app.post('/api/admin/trading/stop', verifyToken, requireAdmin, async (req,res)=>{
-  await pool.query(`UPDATE system_state SET trading_enabled=FALSE`);
-  res.json({ ok:true });
-});
-
+/* ======================
+   ADMIN — LEADERBOARD
+====================== */
 app.get('/api/admin/leaderboard', verifyToken, requireAdmin, async (_, res) => {
   const r = await pool.query(`
     SELECT 
@@ -332,7 +420,9 @@ app.get('/api/admin/leaderboard', verifyToken, requireAdmin, async (_, res) => {
   res.json(r.rows);
 });
 
-/* ✅ FIXED — now returns BOTH name and email */
+/* ======================
+   ADMIN — RECENT TRADES
+====================== */
 app.get('/api/admin/recent-trades', verifyToken, requireAdmin, async (_, res) => {
   try {
     const r = await pool.query(`
@@ -358,16 +448,26 @@ app.get('/api/admin/recent-trades', verifyToken, requireAdmin, async (_, res) =>
   }
 });
 
+/* ======================
+   DEBUG: DB INFO
+====================== */
 pool.query("SELECT current_database(), current_user", (err, r) => {
   console.log("Connected to:", r?.rows);
 });
-
 
 /* ======================
    START SERVER
 ====================== */
 app.listen(PORT, () => {
   console.log(`✅ TradeRace backend running on :${PORT}`);
-  runPriceFetcher().catch(e=>console.error("❌ First tick:", e));
-  setInterval(()=>runPriceFetcher().catch(e=>console.error("❌ Tick:", e)), 10000);
+
+  if (process.env.ENABLE_PRICE_TICK === "1") {
+    runPriceFetcher().catch(e=>console.error("❌ First tick:", e));
+    setInterval(
+      () => runPriceFetcher().catch(e=>console.error("❌ Tick:", e)),
+      Number(process.env.PRICE_TICK_INTERVAL_MS || 10000)
+    );
+  } else {
+    console.log("⚠️ Price engine disabled");
+  }
 });
