@@ -29,6 +29,9 @@ app.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173",
   "https://frontend-five-delta-38.vercel.app",
+  "https://frontend-euvy7dvgk-dejaview.vercel.app",   
+];
+
 ];
 
 app.use(
