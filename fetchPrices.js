@@ -1,113 +1,238 @@
-import * as dotenv from 'dotenv';
+import * as dotenv from "dotenv";
 dotenv.config();
-if (process.env.ALLOW_INSECURE_TLS === '1') process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+if (process.env.ALLOW_INSECURE_TLS === "1") {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
 
-import pkg from 'pg';
+import pkg from "pg";
 const { Pool } = pkg;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
 });
 
-// ✅ STOCK GROUPS (for sector influence)
+/* ======================================
+   1) REAL COMPANIES (US + INDIA)
+====================================== */
 const STOCKS = [
-  { sym: "AAPL",  sector: "TECH",  vol: 0.004 },
-  { sym: "MSFT",  sector: "TECH",  vol: 0.0035 },
-  { sym: "GOOGL", sector: "TECH",  vol: 0.0045 },
-  { sym: "NVDA",  sector: "TECH",  vol: 0.007 },
+  // ======================
+  // 🇺🇸 US TECH
+  // ======================
+  { name: "Apple Inc",            sym: "AAPL",  sector: "TECH", vol: 0.004 },
+  { name: "Microsoft Corp",       sym: "MSFT",  sector: "TECH", vol: 0.0035 },
+  { name: "Alphabet (Google)",    sym: "GOOGL", sector: "TECH", vol: 0.0045 },
+  { name: "Meta Platforms",       sym: "META",  sector: "TECH", vol: 0.0038 },
+  { name: "Netflix",              sym: "NFLX",  sector: "TECH", vol: 0.006 },
+  { name: "Adobe",                sym: "ADBE",  sector: "TECH", vol: 0.0035 },
+  { name: "Oracle",               sym: "ORCL",  sector: "TECH", vol: 0.0025 },
 
-  { sym: "TSLA",  sector: "AUTO",  vol: 0.009 },
-  { sym: "AMZN",  sector: "RETAIL",vol: 0.0045 },
-  { sym: "META",  sector: "TECH",  vol: 0.0038 },
-  { sym: "NFLX",  sector: "MEDIA", vol: 0.006 },
-  { sym: "INTC",  sector: "CHIP",  vol: 0.002 },
-  { sym: "AMD",   sector: "CHIP",  vol: 0.0055 },
+  // ======================
+  // 🇺🇸 CHIP MANUFACTURERS
+  // ======================
+  { name: "Nvidia",               sym: "NVDA", sector: "CHIP", vol: 0.007 },
+  { name: "Advanced Micro Devices", sym: "AMD",  sector: "CHIP", vol: 0.0055 },
+  { name: "Intel",                sym: "INTC", sector: "CHIP", vol: 0.002 },
+  { name: "Qualcomm",             sym: "QCOM", sector: "CHIP", vol: 0.0035 },
+  { name: "Broadcom",             sym: "AVGO", sector: "CHIP", vol: 0.003 },
+
+  // ======================
+  // 🇺🇸 AUTO + EV
+  // ======================
+  { name: "Tesla",                sym: "TSLA", sector: "AUTO", vol: 0.009 },
+  { name: "Ford Motors",          sym: "F",    sector: "AUTO", vol: 0.002 },
+  { name: "General Motors",       sym: "GM",   sector: "AUTO", vol: 0.0022 },
+  { name: "Rivian",               sym: "RIVN", sector: "AUTO", vol: 0.006 },
+
+  // ======================
+  // 🇺🇸 RETAIL + ECOM
+  // ======================
+  { name: "Amazon",               sym: "AMZN", sector: "RETAIL", vol: 0.0045 },
+  { name: "Walmart",              sym: "WMT",  sector: "RETAIL", vol: 0.0015 },
+  { name: "Target",               sym: "TGT",  sector: "RETAIL", vol: 0.002 },
+
+  // ======================
+  // 🇺🇸 FINANCIAL
+  // ======================
+  { name: "JP Morgan Chase",      sym: "JPM",  sector: "FINANCE", vol: 0.0015 },
+  { name: "Goldman Sachs",        sym: "GS",   sector: "FINANCE", vol: 0.002 },
+  { name: "Bank of America",      sym: "BAC",  sector: "FINANCE", vol: 0.0018 },
+
+  // ======================
+  // 🇺🇸 PHARMA / HEALTHCARE
+  // ======================
+  { name: "Pfizer",               sym: "PFE",  sector: "PHARMA", vol: 0.0014 },
+  { name: "Moderna",              sym: "MRNA", sector: "PHARMA", vol: 0.003 },
+  { name: "Johnson & Johnson",    sym: "JNJ",  sector: "PHARMA", vol: 0.0013 },
+
+  // ======================
+  // 🇮🇳 INDIAN IT
+  // ======================
+  { name: "Tata Consultancy Services", sym: "TCS",   sector: "IN_IT", vol: 0.002 },
+  { name: "Infosys",                  sym: "INFY",  sector: "IN_IT", vol: 0.0025 },
+  { name: "HCL Technologies",         sym: "HCL",   sector: "IN_IT", vol: 0.0022 },
+  { name: "Wipro",                    sym: "WIPRO", sector: "IN_IT", vol: 0.0023 },
+
+  // ======================
+  // 🇮🇳 INDIAN BANKS
+  // ======================
+  { name: "HDFC Bank",               sym: "HDFCBK", sector: "IN_BANK", vol: 0.0015 },
+  { name: "ICICI Bank",              sym: "ICICIBK", sector: "IN_BANK", vol: 0.0017 },
+  { name: "SBI",                     sym: "SBIN",   sector: "IN_BANK", vol: 0.0016 },
+
+  // ======================
+  // 🇮🇳 ENERGY + OIL
+  // ======================
+  { name: "Reliance Industries",     sym: "RELIANCE", sector: "IN_ENERGY", vol: 0.002 },
+  { name: "ONGC",                    sym: "ONGC",     sector: "IN_ENERGY", vol: 0.0022 },
+  { name: "BPCL",                    sym: "BPCL",     sector: "IN_ENERGY", vol: 0.0024 },
+
+  // ======================
+  // GLOBAL OIL
+  // ======================
+  { name: "Exxon Mobil",             sym: "XOM", sector: "OIL", vol: 0.002 },
+  { name: "Chevron",                 sym: "CVX", sector: "OIL", vol: 0.002 },
+  { name: "British Petroleum",       sym: "BP",  sector: "OIL", vol: 0.0025 },
 ];
 
-// ✅ RANDOM GLOBAL MARKET NEWS (rare)
+/* ======================================
+   REALISTIC BEHAVIOR COMPONENTS
+====================================== */
+
+let macroEvent = null;
+
+// Persistent macro event (rally/panic)
+function updateMacroEvent() {
+  if (!macroEvent && Math.random() < 0.01) {
+    const isBull = Math.random() < 0.5;
+    macroEvent = {
+      drift: isBull ? 0.01 : -0.01,
+      ticksLeft: 40 + Math.floor(Math.random() * 80),
+    };
+
+    console.log(
+      isBull
+        ? "📈 Macro Rally Started!"
+        : "📉 Macro Panic Started!"
+    );
+  }
+
+  if (macroEvent) {
+    macroEvent.ticksLeft--;
+    if (macroEvent.ticksLeft <= 0) {
+      console.log("🟢 Macro Event Ended");
+      macroEvent = null;
+    }
+  }
+
+  return macroEvent ? macroEvent.drift : 0;
+}
+
+// Short-term global sentiment
 function marketSentiment() {
-  const roll = Math.random();
-
-  if (roll < 0.02) return 0.02;     // 🔥 Strong bull market
-  if (roll < 0.04) return -0.02;    // 📉 Strong crash moment
-  if (roll < 0.08) return 0.01;     // mild positive
-  if (roll < 0.12) return -0.01;    // mild negative
+  const r = Math.random();
+  if (r < 0.01) return 0.02; // big up
+  if (r < 0.02) return -0.02; // big drop
+  if (r < 0.08) return 0.008;
+  if (r < 0.15) return -0.008;
   return 0;
 }
 
-// ✅ SECTOR-BASED NEWS (tech boom, retail crash, etc.)
+// Weekly behavior
+function weeklyDrift() {
+  const day = new Date().getDay();
+  if (day === 1) return 0.002; // Monday optimistic
+  if (day === 5) return -0.002; // Friday selling
+  return 0;
+}
+
+// Intraday volatility approximation
+function intradayVolatility() {
+  const hour = new Date().getHours();
+  if (hour < 10) return 1.8; // open
+  if (hour < 14) return 1.1; // normal
+  if (hour < 16) return 1.6; // close
+  return 1.0;
+}
+
+// Sector sentiment
 function sectorSentiment(sector) {
-  const roll = Math.random();
-  if (roll < 0.03 && sector === "TECH") return 0.015;
-  if (roll < 0.03 && sector === "AUTO") return -0.015;
-  if (roll < 0.03 && sector === "CHIP") return 0.02;
+  if (Math.random() < 0.015) {
+    if (sector.includes("TECH")) return 0.01;
+    if (sector.includes("BANK")) return -0.01;
+    if (sector.includes("ENERGY")) return 0.015;
+    if (sector.includes("AUTO")) return -0.015;
+  }
   return 0;
 }
 
-// ✅ Final realistic price function
-function nextPrice(prev, vol, global, sectorBias) {
-  let baseMove = prev * vol * (Math.random() - 0.5);
-
-  // apply global news
-  baseMove += prev * global;
-
-  // apply sector news
-  baseMove += prev * sectorBias;
-
-  // rare individual spike/crash
-  if (Math.random() < 0.02) baseMove *= (2 + Math.random() * 3);
-
-  const price = prev + baseMove;
-  return Math.max(price, 1);
+// Company-specific news
+function companyNews(name) {
+  if (Math.random() < 0.003) return 0.03; // big positive
+  if (Math.random() < 0.006) return -0.025; // negative
+  return 0;
 }
+
+function nextPrice(prev, vol, globalSent, macro, sector, company) {
+  let movePct = (Math.random() - 0.5) * vol;
+
+  movePct += globalSent + macro + sector + company;
+  movePct += weeklyDrift();
+  movePct *= intradayVolatility();
+
+  movePct = Math.max(Math.min(movePct, 0.12), -0.12);
+
+  return Math.max(prev * (1 + movePct), 1);
+}
+
+/* ======================================
+   MAIN PRICE ENGINE
+====================================== */
 
 export default async function runPriceFetcher() {
-  console.log("⚙️ Realistic price tick started");
+  console.log("⚙️ Price tick running...");
 
   const client = await pool.connect();
   try {
-    // IMPORTANT: Neon doesn't allow search_path in startup packet for pooled connections.
-    // Set it after acquiring the client.
-    await client.query('SET search_path TO public');
-
+    await client.query("SET search_path TO public");
     await client.query("BEGIN");
 
-    const globalNews = marketSentiment();
-    console.log(
-      globalNews > 0
-        ? `🔥 MARKET RALLY: +${(globalNews * 100).toFixed(2)}%`
-        : globalNews < 0
-          ? `🚨 MARKET SELL-OFF: ${(globalNews * 100).toFixed(2)}%`
-          : `✅ Normal market`
-    );
+    const macro = updateMacroEvent();
+    const globalSent = marketSentiment();
 
-    for (const s of STOCKS) {
-      const sectorNews = sectorSentiment(s.sector);
+    for (const stock of STOCKS) {
+      const { sym, name, sector, vol } = stock;
 
-      const r = await client.query(
-        `SELECT current_price FROM live_prices WHERE symbol=$1`,
-        [s.sym]
+      const prevQuery = await client.query(
+        "SELECT current_price FROM live_prices WHERE symbol=$1",
+        [sym]
       );
 
-      const prev = Number(r.rows?.[0]?.current_price ?? 100);
-      const price = nextPrice(prev, s.vol, globalNews, sectorNews);
+      const prev = Number(prevQuery.rows?.[0]?.current_price ?? 100);
+
+      const newPrice = nextPrice(
+        prev,
+        vol,
+        globalSent,
+        macro,
+        sectorSentiment(sector),
+        companyNews(name)
+      );
 
       await client.query(
         `INSERT INTO live_prices(symbol,current_price,last_updated)
-         VALUES ($1,$2,NOW())
+         VALUES($1,$2,NOW())
          ON CONFLICT(symbol) DO UPDATE SET current_price=$2,last_updated=NOW()`,
-        [s.sym, price]
+        [sym, newPrice]
       );
 
-      console.log(`📈 ${s.sym} (${s.sector}) → ${price.toFixed(2)}`);
+      console.log(`📊 ${name} (${sym}) → ${newPrice.toFixed(2)}`);
     }
 
     await client.query("COMMIT");
   } catch (err) {
-    // show full error object for debugging (you can reduce verbosity later)
-    console.error("❌ Price engine error:", err && err.message ? err.message : err);
-    try { await client.query("ROLLBACK"); } catch (e) { /* ignore rollback errors */ }
+    console.error("❌ Price engine error:", err);
+    await client.query("ROLLBACK");
   } finally {
     client.release();
   }
