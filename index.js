@@ -24,13 +24,13 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 
 /* ======================
-   CORS — FIXED, SAFE FOR RENDER + VERCEL
+   CORS
 ====================== */
 const allowedOrigins = [
   "http://localhost:5173",
   "https://frontend-five-delta-38.vercel.app",
   "https://frontend-euvy7dvgk-dejaview.vercel.app",
-  new RegExp("https://.*\\.vercel\\.app$") // allow any Vercel deployment
+  new RegExp("https://.*\\.vercel\\.app$")
 ];
 
 app.use(
@@ -311,9 +311,31 @@ app.get("/api/candles/:symbol", async (req, res) => {
 });
 
 /* ======================
+   USER TRADE HISTORY (MISSING ROUTE FIXED)
+====================== */
+app.get("/api/portfolio-history", verifyToken, async (req, res) => {
+  try {
+    const uid = req.user.id;
+
+    const trades = await pool.query(
+      `SELECT symbol, trade_type, quantity, price, timestamp
+       FROM trade_history
+       WHERE user_id = $1
+       ORDER BY timestamp DESC
+       LIMIT 20`,
+      [uid]
+    );
+
+    res.json(trades.rows);
+  } catch (err) {
+    console.error("❌ portfolio-history error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/* ======================
    ADMIN ROUTES
 ====================== */
-
 app.get("/api/admin/players", verifyToken, requireAdmin, async (_, res) => {
   const r = await pool.query(
     `SELECT id,name,email,status,virtual_cash FROM users ORDER BY email`
